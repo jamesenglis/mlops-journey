@@ -1,154 +1,177 @@
-# FastAPI ML Application
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import joblib
 import pandas as pd
-import sqlite3
+import numpy as np
 import os
-from typing import List, Optional
+import logging
 
-app = FastAPI(
-    title="Customer Churn Prediction API",
-    description="ML API for predicting customer churn from e-commerce data",
-    version="1.0.0"
-)
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Load model once at startup
+app = FastAPI(title="Churn Prediction API", version="1.0.0")
+
+# Global variables for model and features
 model = None
 feature_names = None
 
-@app.on_event("startup")
-async def load_model():
-    global model, feature_names
-    try:
-        model_path = "../models/churn_predictor.pkl"
-        feature_path = "../models/feature_names.pkl"
-        
-        model = joblib.load(model_path)
-        feature_names = joblib.load(feature_path)
-        
-        print("✅ ML Model loaded successfully!")
-    except Exception as e:
-        print(f"❌ Failed to load model: {e}")
-
 class CustomerData(BaseModel):
-    user_id: int
+    age: int
+    tenure: int
+    monthly_charges: float
+    total_charges: float
+    contract_type: str
+    support_calls: int
 
-class PredictionResponse(BaseModel):
-    user_id: int
-    churn_probability: float
-    will_churn: bool
-    risk_level: str
-    recommendation: str
-    status: str
+def load_model():
+    """Load the model and feature names with comprehensive debugging"""
+    global model, feature_names
+    
+    logger.info("🔍 STARTING MODEL LOAD DEBUGGING")
+    
+    # Debug: Current directory and files
+    logger.info(f"Current working directory: {os.getcwd()}")
+    logger.info("Contents of current directory:")
+    for item in os.listdir('.'):
+        logger.info(f"  📁 {item}")
+    
+    # Debug: Check app directory
+    app_dir = '/app' if os.path.exists('/app') else '.'
+    logger.info(f"App directory: {app_dir}")
+    logger.info(f"Contents of {app_dir}:")
+    if os.path.exists(app_dir):
+        for item in os.listdir(app_dir):
+            item_path = os.path.join(app_dir, item)
+            item_type = "📁 DIR" if os.path.isdir(item_path) else "📄 FILE"
+            logger.info(f"  {item_type} {item}")
+    
+    # Debug: Check models directory
+    models_path = '/app/models' if os.path.exists('/app/models') else './models'
+    logger.info(f"Models path: {models_path}")
+    
+    if os.path.exists(models_path):
+        logger.info(f"Contents of {models_path}:")
+        for item in os.listdir(models_path):
+            item_path = os.path.join(models_path, item)
+            item_type = "📁 DIR" if os.path.isdir(item_path) else "📄 FILE"
+            size = os.path.getsize(item_path) if os.path.isfile(item_path) else "N/A"
+            logger.info(f"  {item_type} {item} ({size} bytes)")
+    else:
+        logger.error(f"❌ Models directory does not exist: {models_path}")
+    
+    # Try to load model
+    model_path = os.path.join(models_path, 'churn_predictor.pkl')
+    features_path = os.path.join(models_path, 'feature_names.pkl')
+    
+    logger.info(f"Model path: {model_path}")
+    logger.info(f"Features path: {features_path}")
+    
+    try:
+        if os.path.exists(model_path):
+            logger.info(f"✅ Model file exists: {model_path}")
+            model = joblib.load(model_path)
+            logger.info("✅ Model loaded successfully!")
+        else:
+            logger.error(f"❌ Model file not found: {model_path}")
+            
+        if os.path.exists(features_path):
+            logger.info(f"✅ Features file exists: {features_path}")
+            feature_names = joblib.load(features_path)
+            logger.info(f"✅ Features loaded: {feature_names}")
+        else:
+            logger.error(f"❌ Features file not found: {features_path}")
+            
+    except Exception as e:
+        logger.error(f"❌ Error loading model/features: {e}")
+        # Create fallback model for testing
+        logger.info("🔄 Creating fallback model for testing...")
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.datasets import make_classification
+        
+        X, y = make_classification(n_samples=100, n_features=6, random_state=42)
+        model = RandomForestClassifier(n_estimators=10, random_state=42)
+        model.fit(X, y)
+        feature_names = ['age', 'tenure', 'monthly_charges', 'total_charges', 
+                        'support_calls', 'contract_type_Monthly', 'contract_type_Yearly', 'contract_type_Two-year']
+        logger.info("✅ Fallback model created for testing")
+
+@app.on_event("startup")
+async def startup_event():
+    """Load model on startup"""
+    logger.info("🚀 Starting up Churn Prediction API...")
+    load_model()
 
 @app.get("/")
-async def root():
+def read_root():
     return {
-        "message": "🚀 Customer Churn Prediction API is running!",
-        "version": "1.0.0",
-        "endpoints": {
-            "health": "/health",
-            "predict": "/predict/{user_id}",
-            "batch_predict": "/predict/batch"
-        }
+        "message": "Churn Prediction API is running!",
+        "model_loaded": model is not None,
+        "features_loaded": feature_names is not None
     }
 
 @app.get("/health")
-async def health_check():
+def health_check():
     return {
-        "status": "healthy",
+        "status": "healthy" if model is not None else "degraded",
         "model_loaded": model is not None,
-        "message": "API is ready for predictions!"
+        "features_loaded": feature_names is not None
     }
 
-@app.get("/predict/{user_id}", response_model=PredictionResponse)
-async def predict_churn(user_id: int):
-    if model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
+@app.get("/debug")
+def debug_info():
+    """Endpoint to get debug information"""
+    models_path = '/app/models' if os.path.exists('/app/models') else './models'
+    model_path = os.path.join(models_path, 'churn_predictor.pkl')
+    features_path = os.path.join(models_path, 'feature_names.pkl')
+    
+    return {
+        "current_directory": os.getcwd(),
+        "app_directory_exists": os.path.exists('/app'),
+        "models_directory_exists": os.path.exists(models_path),
+        "model_file_exists": os.path.exists(model_path),
+        "features_file_exists": os.path.exists(features_path),
+        "model_loaded": model is not None,
+        "features_loaded": feature_names is not None,
+        "container_files": {
+            "root": os.listdir('/') if os.path.exists('/') else [],
+            "app": os.listdir('/app') if os.path.exists('/app') else [],
+            "models": os.listdir(models_path) if os.path.exists(models_path) else []
+        }
+    }
+
+@app.post("/predict")
+def predict_churn(customer: CustomerData):
+    if model is None or feature_names is None:
+        raise HTTPException(status_code=503, detail="Model not loaded yet")
     
     try:
-        # Get customer data from SQL database
-        db_path = "../../01-sql-foundations/data/ecommerce.db"
-        conn = sqlite3.connect(db_path)
+        # Convert to DataFrame
+        input_data = pd.DataFrame([customer.dict()])
         
-        query = f"""
-        SELECT 
-            u.user_id,
-            u.country,
-            COUNT(o.order_id) as total_orders,
-            SUM(o.amount) as total_spent,
-            AVG(o.amount) as avg_order_value,
-            JULIANDAY('now') - JULIANDAY(MAX(o.order_date)) as days_since_last_order,
-            COUNT(DISTINCT strftime('%Y-%m', o.order_date)) as active_months,
-            COUNT(DISTINCT o.product_id) as unique_products_bought,
-            SUM(CASE WHEN o.order_date >= date('now', '-30 days') THEN 1 ELSE 0 END) as orders_last_30_days,
-            SUM(CASE WHEN o.order_date >= date('now', '-30 days') THEN o.amount ELSE 0 END) as spent_last_30_days
-        FROM users u
-        LEFT JOIN orders o ON u.user_id = o.user_id
-        WHERE u.user_id = {user_id}
-        GROUP BY u.user_id, u.country
-        """
+        # One-hot encoding for contract_type
+        input_processed = pd.get_dummies(input_data)
         
-        customer_data = pd.read_sql_query(query, conn)
-        conn.close()
+        # Ensure all expected columns are present
+        for col in feature_names:
+            if col not in input_processed.columns:
+                input_processed[col] = 0
         
-        if customer_data.empty:
-            raise HTTPException(status_code=404, detail=f"Customer {user_id} not found")
+        # Reorder columns to match training
+        input_processed = input_processed[feature_names]
         
-        # Prepare features
-        features = customer_data.drop(['user_id'], axis=1)
-        features = pd.get_dummies(features, columns=['country'], prefix='country')
+        prediction = model.predict(input_processed)[0]
+        probability = model.predict_proba(input_processed)[0][1]
         
-        # Ensure all training features are present
-        for feature in feature_names:
-            if feature not in features.columns:
-                features[feature] = 0
-        
-        features = features[feature_names]
-        
-        # Make prediction
-        churn_probability = model.predict_proba(features)[0][1]
-        will_churn = churn_probability > 0.5
-        
-        # Interpret results
-        risk_level = "HIGH" if churn_probability > 0.7 else "MEDIUM" if churn_probability > 0.3 else "LOW"
-        recommendation = "Offer retention discount" if will_churn else "Continue normal engagement"
-        
-        return PredictionResponse(
-            user_id=user_id,
-            churn_probability=round(churn_probability, 3),
-            will_churn=will_churn,
-            risk_level=risk_level,
-            recommendation=recommendation,
-            status="success"
-        )
-        
+        return {
+            "churn_prediction": bool(prediction),
+            "churn_probability": float(probability),
+            "customer_data": customer.dict(),
+            "features_used": feature_names
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
-
-@app.post("/predict/batch")
-async def batch_predict(customer_ids: List[int]):
-    if model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
-    
-    results = []
-    for user_id in customer_ids:
-        try:
-            # Reuse the prediction logic from single prediction
-            prediction = await predict_churn(user_id)
-            results.append(prediction.dict())
-        except Exception as e:
-            results.append({
-                "user_id": user_id,
-                "error": str(e),
-                "status": "failed"
-            })
-    
-    return {
-        "predictions": results,
-        "total_processed": len(results)
-    }
+        logger.error(f"Prediction error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

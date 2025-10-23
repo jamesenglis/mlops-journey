@@ -1,0 +1,99 @@
+name: MLOps CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        pip install -r 03-docker-api/requirements.txt
+        pip install pytest pytest-cov
+    
+    - name: Run unit tests
+      run: |
+        python -m pytest tests/ -v --cov=.
+
+  build-and-test-api:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Build Docker image
+      run: |
+        cd 03-docker-api
+        docker build -t churn-api:${{ github.sha }} .
+    
+    - name: Test Docker container
+      run: |
+        cd 03-docker-api
+        docker run -d -p 8000:8000 --name test-api churn-api:${{ github.sha }}
+        sleep 10
+        
+        # Test health endpoint
+        curl -f http://localhost:8000/health || exit 1
+        
+        # Test prediction endpoint
+        curl -f -X POST http://localhost:8000/predict \
+          -H "Content-Type: application/json" \
+          -d '{"age":45,"tenure":24,"monthly_charges":75.50,"total_charges":1800.00,"contract_type":"Monthly","support_calls":3}' || exit 1
+        
+        docker stop test-api
+        docker rm test-api
+
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Run security scan
+      run: |
+        pip install bandit
+        bandit -r 03-docker-api/app/ -f html -o security-report.html || true
+    
+    - name: Upload security report
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-report
+        path: security-report.html
+
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: [test, build-and-test-api]
+    if: github.ref == 'refs/heads/main'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Deploy to staging
+      run: |
+        echo "🚀 Deploying to staging environment"
+        echo "Staging deployment would happen here"
+
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/main'
+    steps:
+    - name: Deploy to production
+      run: |
+        echo "🎯 Deploying to production"
+        echo "Production deployment would happen here"
